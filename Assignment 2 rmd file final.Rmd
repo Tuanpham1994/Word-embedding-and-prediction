@@ -1,0 +1,1056 @@
+---
+title: "Assignment 2 Text Analytics for Marketing"
+author: "Team 6: Kaan Alkan, Narmin Qarazada, Anh Tuan Pham & Victor de Andrade"
+date: "April, 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r, echo=TRUE, message=FALSE, warning=FALSE, results="asis"}
+#Assignment 2 Part 1: Word Embeddings
+
+#Packages and R settings
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(text2vec)
+library(tidytext)
+library(ggplot2)
+library(SnowballC)
+library(qdap)
+
+#Obtaining and Organizing Data
+setwd("C:/Users/Pham Anh Tuan/OneDrive - Erasmus University Rotterdam/Data Science/Text ANalytics/Assignment 1")
+clothing_df <- read.csv("WomensClothingECommerceReviews.csv")
+
+```
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, results="asis"}
+clothing_df$Review.Text <- as.character(clothing_df$Review.Text) %>%
+  tolower() %>%
+  #{mgsub(emoticon[,2], emoticon[,1], .)} %>%# There arent any emoticons in the data?
+  {gsub("\\n", " ", .)} %>%                              # Remove \n (newline)
+  {gsub("[?!]+", ".", .)} %>%           # Remove ? and ! (replace by single .)
+  {gsub("[\\[\\*\\]]*", " ", .)} %>%   # Remove [ and ] * (replace by single space)
+  {gsub("(\"| |\\$)-+\\.-+", " number ", .)} %>%    # Find numbers
+  {gsub("(-+:)*-+ *am", " timeam", .)} %>%        # Find time AM
+  {gsub("(-+:)*-+ *pm", " timepm", .)} %>%         # Find time PM
+  {gsub("-+:-+", "time", .)} %>%          # Find general time
+  {gsub("( |\\$)--+", " number ", .)} %>% # Find remaining numbers
+  {gsub("-"," ", .)} %>%                 # Remove all -
+  {gsub("\"+", " ", .)} %>%              # Remove all "
+  {gsub(";+", " ", .)} %>%               # Remove excess ;
+  {gsub("\\.+","\\. ", .)} %>%           # Remove excess .
+  {gsub(" +"," ", .)} %>%                # Remove excess spaces
+  {gsub("\\. \\.","\\. ", .)}            # Remove space between periods
+
+glimpse(clothing_df) 
+
+#Word Stemming
+# here not removing stop words, only stemming done
+for (j in 1:nrow(clothing_df)) {
+  stemmed_description<-  anti_join((clothing_df[j,] %>% unnest_tokens(word,Review.Text, drop=FALSE,to_lower=TRUE) ),stop_words)
+  stemmed_description<-(wordStem(stemmed_description[,"word"], language = "porter"))
+  
+  clothing_df[j, "stemmed_reviewtext"] <- paste(stemmed_description, collapse = " ")
+  
+}
+
+# Pre-process and get TCM
+
+# create iterator over list of text items
+it = itoken(clothing_df$stemmed_reviewtext)
+
+#create the vocabulary and remove infrequent words
+vocabulary = create_vocabulary(it)
+vocabulary = prune_vocabulary(vocabulary, term_count_min = 400)
+
+#create vector version of the vocabulary: speeds up allocation/search process
+v_vect = vocab_vectorizer(vocabulary)
+
+# create term co-occurrence matrix
+tcm = create_tcm(it, v_vect, skip_grams_window = 6L, skip_grams_window_context = "symmetric", weights = rep(1,6) ) 
+#tcm
+printable_tcm <- as.matrix(tcm) + t(as.matrix(tcm))  
+# in sparse representation only half the numbers of symmetric matrix are stored. 
+#printable_tcm
+diag(printable_tcm) <- diag(printable_tcm) - diag(as.matrix(tcm)) 
+#avoid double counting diagonal
+
+printable_tcm <- cbind(printable_tcm , term_count = vocabulary$term_count) 
+# include term counts on diagonal
+#stemmed_description
+# wordlist = c("5'7","heel","strap","highli","suit","brand","flare","0","excit","xl","beautifulli")
+wordlist = c("5'7","heel","strap","highli","suit","brand","flare","0","excit",
+"xl","beautifulli","curvi","12","embroideri","arriv","5'2","dark",
+"extrem","surpris","frame","torso","item","5'5","cami","type",
+"cover","flat","hole","feminin","lightweight","cotton","normal",
+"3","5'3","cardigan","inch","snug","flow","tunic","belt","knit",
+"heavi","grei","amaz","easili","pink","cloth","slim","coat","huge",
+"issu","slip","larger","necklin","winter","denim","navi",
+"favorit","spring","tt","thick","refer","hang","add","tall","typic","shorter",
+"glad","hem","versatil","pull","skinni","worth","boot","flowi","fine","figur",
+"5'4","low","decid","drape","sheer","ador","warm","10","knee","happi","wait",
+"extra","fun","pocket","boxi","tee","easi","tank","neck","underneath","lace",
+"wide","uniqu","green","red","hope","slightli","layer","absolut","comfi","8",
+"disappoint","expect","usual","hit","stretch","wore","weight","found","bra",
+"receiv","make","print","blous","thin","gorgeou","photo","compliment","5",
+"casual","bust","recommend","lot","hip","regular","light","dai","worn","pattern",
+"bui","button","6","bodi","wash","piec","chest","loos","shape","2","look",
+"blue","front","jacket","price","4","bottom","lb","sale","time","model","pair",
+"person","perfectli","shoulder","leg","arm","fall","white","detail","line",
+"summer","onlin","true","pictur","super","tight","return","black","design",
+"cut","style","sleev","pant","store","retail","review","pretti","x","skirt",
+"feel","medium","qualiti","purchas","short","petit","jean","waist","length",
+"sweater","run","materi","bit","bought","cute","beauti","shirt","comfort",
+"soft","flatter","nice","perfect","fabric","color","wear","top","size","love",
+"fit","dress")
+
+#Term co-occurrance Frequencies (Slide 21)
+
+cbind(printable_tcm[wordlist, wordlist],printable_tcm[wordlist, "term_count"])
+#dim(printable_tcm)
+
+#Conditional Word Probabilities (Slide 22) 
+cbind(printable_tcm[wordlist, wordlist],printable_tcm[wordlist, "term_count"])/printable_tcm[wordlist, "term_count"]
+
+#Class 6 objects in R are mutable objects. You can run methods/models on them 
+#and they change content.
+#Step 1 is to create a model with a set of model configuration parameters.
+
+glove_model = GlobalVectors$new( x_max = 1000 , rank = 50)
+
+# fit model and obtain results.
+# note that the glove_model construct is now also changed!
+
+word_vectors = glove_model$fit_transform(tcm, n_iter = 200)
+
+#Glove Word Embeddings (Slide 31)
+GWE<- t(word_vectors[wordlist,1:3])
+class(GWE)
+sort(GWE[1,], decreasing = TRUE)
+sort(GWE[2,], decreasing = TRUE)
+sort(GWE[3,], decreasing = TRUE)
+
+
+similarity_matrix = sim2(word_vectors)
+print("a sample of the similarity matrix across words ")
+
+similarity_matrix[wordlist,wordlist]
+nwords=nrow(similarity_matrix)
+
+top_bottom=c(1:10,(nwords-9):nwords)
+
+################Q2#################
+
+cc=sort(similarity_matrix[,"heel"], decreasing=TRUE)
+cc[top_bottom]
+
+comparator = word_vectors["heel",]
+similarities = sim2(word_vectors,t(comparator))
+ranking = similarities %>% order(decreasing=TRUE)
+print(as.data.frame(similarities[ranking[top_bottom]], row.names = vocabulary$term[ranking[top_bottom]]))
+
+
+###########################Q3#######################
+comparator = word_vectors["summer",]- word_vectors["winter",] 
++ word_vectors["disappoint",]
+similarities = sim2(word_vectors,t(comparator))
+ranking = similarities %>% order(decreasing=TRUE)
+print(as.data.frame(similarities[ranking[top_bottom]], row.names = vocabulary$term[ranking[top_bottom]]))
+
+comparator = word_vectors["winter",]- word_vectors["summer",] 
++ word_vectors["disappoint",]
+similarities = sim2(word_vectors,t(comparator))
+ranking = similarities %>% order(decreasing=TRUE)
+print(as.data.frame(similarities[ranking[top_bottom]], row.names = vocabulary$term[ranking[top_bottom]]))
+
+
+```
+
+
+```{r, eval=FALSE}
+###Construct data for predictive modelling
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(SnowballC)
+library(syuzhet)
+library(tidyr)
+library(qdap)
+setwd("C:/Users/Pham Anh Tuan/OneDrive - Erasmus University Rotterdam/Data Science/Text ANalytics/Assignment 1")
+clothing_df <- read.csv("WomensClothingECommerceReviews.csv")
+clothing_df <- clothing_df[,c(2,3,5,6,7,10)]
+clothing_df$Review_ID <- 1:nrow(clothing_df)
+write.csv(clothing_df,"C:/Users/Pham Anh Tuan/OneDrive - Erasmus University Rotterdam/Data Science/Text ANalytics/Assignment 1/clothing_df.csv", row.names = FALSE)
+
+clothing_df$reviewtext <- as.character(clothing_df$Review.Text)  %>%
+  tolower() %>%
+  {mgsub(emoticon[,2],emoticon[,1],.)} %>%
+  {gsub("\\n", " ", .)} %>%               # Remove \n (newline)     
+  {gsub("[?!]+",".",.)} %>%            # Remove ? and ! (replace by single .)
+  {gsub("[\\[\\*\\]]*"," ",.)} %>%  # Remove [ and ] * (replace by single space)
+  {gsub("(\"| |\\$)-+\\.-+"," number ", .)} %>%    # Find numbers
+  {gsub("(-+:)*-+ *am"," timeam", .)} %>%          # Find time AM
+  {gsub("(-+:)*-+ *pm"," timepm", .)} %>%          # Find time PM
+  {gsub("-+:-+","time", .)} %>%                    # Find general time
+  {gsub("( |\\$)--+"," number ", .)} %>%           # Find remaining numbers
+  {gsub("-"," ", .)} %>%                           # Remove all -
+  {gsub("\"+"," ", .)} %>%                         # Remove all "
+  {gsub(";+"," ", .)} %>%                          # Remove excess ;
+  {gsub("\\.+","\\. ", .)} %>%                     # Remove excess .
+  {gsub(" +"," ", .)} %>%                          # Remove excess spaces
+  {gsub("\\. \\.","\\. ", .)}%>%               # Remove space between periods
+  {gsub("isn't","is not",.)}%>%                # Replace isn't with is not
+  {gsub("aren't","are not",.)}%>%              # Replace aren't with are not
+  {gsub("wasn't","was not",.)}%>%              # Replace wasn't with was not
+  {gsub("weren't","were not",.)}%>%            # Replace weren't with were not
+  {gsub("won't", "will not",.)}%>%             # Replace won't with will not
+  {gsub("shan't", "shall not",.)}%>%           # Replace shan't with shall not
+  {gsub("hasn't", "has not",.)}%>%             # Replace hasn't with has not
+  {gsub("haven't", "have not",.)}%>%           # Replace haven't with have not
+  {gsub("hadn't","had not",.)}%>%              # Replace hadn't with had not
+  {gsub(":( |-|o)*\\("," SADSMILE ", .)} %>%   # Find :( or :-( or : ( or :o(
+  {gsub(":( |-|o)*\\)"," HAPPYSMILE ", .)}     # Find :) or :-) or : ) or :o)
+
+clothing_df <- clothing_df %>% filter(reviewtext != "")%>% 
+  filter(Department.Name != "")
+
+#Remove stop words (with/without "no", "not", "never") and stem
+ignorelist_clothing = stop_words %>% 
+  filter(!word %in% c("no", "not", "never", "hardly"))
+
+for (j in 1:nrow(clothing_df)) {
+  
+  words_clothing <- clothing_df[j,] %>% 
+    unnest_tokens(word, reviewtext) %>% 
+    anti_join(ignorelist_clothing, by="word")
+  
+  stemmed_clothing <- wordStem(words_clothing[ , "word"], language = "porter")
+  clothing_df[j, "stemmed_reviewtext_with_no"] <- paste(stemmed_clothing, collapse = " ")
+  
+  # Again, but with ignoring all stopwords
+  nostopwords_clothing <- clothing_df[j,] %>% unnest_tokens(word, reviewtext) %>%
+    anti_join( stop_words, by = "word")
+  stemmed_clothing <- wordStem(nostopwords_clothing[ , "word"], 
+                               language = "porter")
+  
+  # Add variables to data
+  clothing_df[j, "stemmed_reviewtext"] <- paste(stemmed_clothing, 
+                                                collapse = " ")
+  clothing_df[j, "reviewtext"] <- paste((nostopwords_clothing$word), 
+                                        collapse = " ")
+  clothing_df[j, "Nr_of_words"]<- nrow(nostopwords_clothing)
+}
+
+print("done")
+
+#Construct bi-grams from stemmed text, no stop words, but including no/not/never
+#Use rating =1,2,3,4  to make the recommended.IND more balance
+
+set.seed(1234)
+
+clothing_df_small <- clothing_df[clothing_df$Rating != 5,]
+sum(is.na(clothing_df_small))
+table(clothing_df_small$Recommended.IND)
+
+all_bigrams_clothing <- clothing_df_small[,c("Review_ID", 
+                                             "stemmed_reviewtext_with_no")] %>% 
+  unnest_tokens(bigram, stemmed_reviewtext_with_no, token = "ngrams", n = 2 )
+
+
+#This ignores sentences within a review.. could be improved.
+head(all_bigrams_clothing)
+all_bigrams_clothing <- all_bigrams_clothing %>%  dplyr::count(bigram, sort = TRUE)
+all_bigrams_clothing[1:80,]
+sel_bigrams_clothing <- all_bigrams_clothing %>% filter(n>=50)
+sel_bigrams_clothing
+
+#Analyze bi-grams and look at bigrams where first word is no, never, or not
+bigrams_sep_clothing <-  separate(all_bigrams_clothing , 
+                                  bigram, c("word1", "word2"), sep = " ")
+bigrams_sep_clothing[1:20,]
+
+# Look at bigrams where first word = ...
+bigrams_sep_clothing %>%  filter(word1 == "no") %>% top_n(10, n)
+bigrams_sep_clothing %>%  filter(word1 == "never") %>% top_n(10, n)
+bigrams_sep_clothing %>%  filter(word1 == "not") %>% top_n(10, n)
+
+#Select  infrequent and very frequent words to remove from review text
+# Get word frequency after stemming
+frequency_clothing  <- clothing_df_small %>% 
+  unnest_tokens(word, stemmed_reviewtext) %>% dplyr::count(word, sort=TRUE)
+typeof(clothing_df_small$Review_ID)
+
+#Get document term matrix uni-grams
+clothing_df_small$Review_ID <- clothing_df_small$Review_ID %>% as.factor() 
+typeof(clothing_df_small$Review_ID)
+
+# The factor may have more values than are actually present. 
+# These are removed here, as this causes an error in prcomp
+
+clothing_dtm <- clothing_df_small %>% 
+  unnest_tokens(word, stemmed_reviewtext) %>% 
+  dplyr::count(Review_ID, word, sort=TRUE) %>% 
+  ungroup() %>%
+  cast_dtm(Review_ID,word,n)
+
+#Get document term matrix for bi-grams
+clothing_dtm_bi <- clothing_df_small %>% 
+  unnest_tokens(bigram, stemmed_reviewtext_with_no, token = "ngrams", n = 2) %>% 
+  filter(bigram %in% sel_bigrams_clothing$bigram) %>%
+  dplyr::count(Review_ID, bigram, sort=TRUE)
+clothing_dtm_bi$Review_ID = as.factor(clothing_dtm_bi$Review_ID)
+
+
+clothing_dtm_bi <- clothing_dtm_bi %>% 
+  ungroup() %>%
+  cast_dtm(Review_ID, bigram, n)
+
+#Run PCA on DTM
+N_factors_clothing   <- 15
+pca_results_clothing <- prcomp(clothing_dtm, scale = FALSE, rank. = N_factors_clothing)  #get the 15 most important factors
+rawLoadings_clothing <- pca_results_clothing$rotation[, 1:N_factors_clothing] %*% diag(pca_results_clothing$sdev, N_factors_clothing, N_factors_clothing)
+rotated_clothing     <- varimax(rawLoadings_clothing)
+
+pca_results_clothing$rotation <- rotated_clothing$loadings
+pca_results_clothing$x <- scale(pca_results_clothing$x[,1:N_factors_clothing]) %*% rotated_clothing$rotmat 
+
+#PCA plot and factor
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("wordcloud")) install.packages("wordcloud")
+if (!require("tidytext")) install.packages("tidytext")
+if (!require("smacof")) install.packages("smacof")
+if (!require("ggrepel")) install.packages("ggrepel")
+if (!require("ggfortify")) install.packages("ggfortify")
+if (!require("ggthemes")) install.packages("ggthemes")
+if (!require("tm")) install.packages("tm")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("factoextra")) install.packages("factoextra")
+if (!require("quanteda")) install.packages("quanteda")
+axeslist=c(5,8)
+fviz_pca_var(pca_results_clothing, axes=axeslist 
+             ,col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+fviz_pca_ind(pca_results_clothing, axes = axeslist,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = FALSE,     # Avoid text overlapping
+             #             geom = "point" # shows only points and no lables
+)
+selected <- clothing_df_small %>% filter(Review_ID == 1781)
+selected2 <- clothing_df_small %>% filter(Review_ID == 10411)
+
+axeslist=c(10,13)
+fviz_pca_var(pca_results_clothing, axes=axeslist 
+             ,col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+fviz_pca_ind(pca_results_clothing, axes = axeslist,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = FALSE,     # Avoid text overlapping
+             #             geom = "point" # shows only points and no lables
+)
+selected3 <- clothing_df_small %>% filter(Review_ID == 3939)
+selected4 <- clothing_df_small %>% filter(Review_ID == 15010)
+
+# Add the factors to the data frame
+lastcol_clothing    <- ncol(clothing_df_small)
+clothing_df_small <- data.frame(clothing_df_small, factor = pca_results_clothing$x)
+colnames(clothing_df_small)[(lastcol_clothing+1):(lastcol_clothing+N_factors_clothing)] <- paste0("factor", 1:N_factors_clothing)
+
+# Figure out which words load high on each factor
+factor_labels_clothing <- NULL 
+for (j in 1:N_factors_clothing) {
+  aa_clothing<-abs(pca_results_clothing$rotation[,j]) %>% sort(decreasing = TRUE) 
+  factor_labels_clothing <- rbind(factor_labels_clothing, paste0(names(aa_clothing[1:8])))
+}
+factor_labels_clothing
+
+#Add indicators for 50 most common words
+counts_clothing <- colSums(as.matrix(clothing_dtm)) %>% sort(decreasing=TRUE)
+
+
+lastcol_clothing        <- ncol(clothing_df_small)
+N_words_stored_clothing <- 50
+word_labels_clothing    <- (names(counts_clothing)[1:N_words_stored_clothing])
+clothing_df_small     <- data.frame(clothing_df_small, words = as.matrix(clothing_dtm[,word_labels_clothing]))
+names(clothing_df_small)[(lastcol_clothing+1):(lastcol_clothing+N_words_stored_clothing)] <- word_labels_clothing
+
+#Add inferred emotions
+nrc_emotions_clothing  <- get_nrc_sentiment(clothing_df_small$Review.Text)
+
+clothing_df_small <- data.frame(clothing_df_small, nrc_emotions_clothing)
+
+#Add bigrams
+clothing_dtm_bi <- as.matrix(clothing_dtm_bi)
+clothing_df_small <- cbind(clothing_df_small, clothing_dtm_bi[match(rownames(clothing_df_small), rownames(clothing_dtm_bi)),])
+clothing_df_small[is.na(clothing_df_small)] <- 0
+#Save data
+save(clothing_df_small , file="clothing_with_predictor_variables.rData")
+?write.csv
+write.csv(clothing_df_small,"C:/Users/Pham Anh Tuan/OneDrive - Erasmus University Rotterdam/Data Science/Text ANalytics/Assignment 1/clothing_predictive.csv",row.names = F)
+
+```
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, results="asis"}
+#####------Predictive modelling------#####
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(SnowballC)
+library(syuzhet)
+library(tidyr)
+library(qdap)
+library(caret)
+library("matrixStats")
+library(plotmo)
+#load data
+load("C:/Users/Pham Anh Tuan/OneDrive - Erasmus University Rotterdam/Data Science/Text ANalytics/reviews_with_predictor_variables.rData")
+load("clothing_with_predictor_variables.rData")
+
+colnames(clothing_df_small) <- gsub(" ", "_", colnames(clothing_df_small))  # replace spaces in variable names
+colnames(clothing_df_small) <- gsub("^([0-9]*)_(.*)$","i_\\1_\\2",colnames(clothing_df_small))
+typeof(clothing_df_small$Recommended.IND) 
+
+N_factors_clothing <- 15
+N_emotions_clothing <- 10 # includes pos/neg
+N_words_stored_clothing <- 50
+N_bigrams_stored_clothing <- 197
+
+#Get feature names and split sample
+index_clothing <- 12
+factornames_clothing <- colnames(clothing_df_small)[index_clothing:(index_clothing+N_factors_clothing-1)]
+index_clothing <- index_clothing + N_factors_clothing
+wordnames_clothing <- colnames(clothing_df_small)[index_clothing:(index_clothing+N_words_stored_clothing-1)]
+index_clothing <- index_clothing + N_words_stored_clothing
+emotionnames_clothing <- colnames(clothing_df_small)[index_clothing:(index_clothing+N_emotions_clothing-1)]
+index_clothing <- index_clothing + N_emotions_clothing
+bigramnames_clothing <- colnames(clothing_df_small)[index_clothing:(index_clothing+N_bigrams_stored_clothing-1)]
+index_clothing <- index_clothing + N_bigrams_stored_clothing
+
+#Prepare some strings for efficient use in model definitions
+allFactors_clothing <- paste(factornames_clothing,collapse="+")
+allEmotions_clothing <- paste(emotionnames_clothing,collapse="+")
+allWords_clothing <- paste(wordnames_clothing,collapse="+")
+bigramnames_clothing <- gsub("^([0-9]*)_(.*)$","i_\\1_\\2",bigramnames_clothing)
+allBigrams_clothing <- paste(bigramnames_clothing,collapse="+")
+allWordsAndBigrams_clothing <- paste(c(wordnames_clothing, bigramnames_clothing),collapse=" + ")
+
+#Data partition
+set.seed(1234)    # fix seed to allow for results to be reproducible
+estimation_sample_clothing <- sort(sample(1:nrow(clothing_df_small), size = round(0.7*nrow(clothing_df_small))))
+test_sample_clothing <- (1:nrow(clothing_df_small))[-estimation_sample_clothing]
+
+set.seed(1234)
+clothing_unique <- sample(2, nrow(clothing_df_small),replace = T, prob = c(0.7,0.3))
+train_clothing <- clothing_df_small[clothing_unique ==1,]
+train_clothing <- na.omit(train_clothing)
+test_clothing <- clothing_df_small[clothing_unique ==2,]
+test_clothing <- na.omit(test_clothing)
+table(train_clothing$Recommended.IND)
+table(test_clothing$Recommended.IND)
+Age <- c('Age')
+
+# show example
+allFactors_clothing
+
+#------Basic linear model (without interactions and variable selection)
+f_clothing <- formula(paste("Recommended.IND ~ Nr_of_words + ", allFactors_clothing, " + ", allEmotions_clothing, " + ", allWords_clothing , " + ", allBigrams_clothing, "+", Age))
+lm.all_clothing <- lm(f_clothing , data=train_clothing)
+summary(lm.all_clothing)
+#adj R2 = 0.2161
+
+#------Linear model without emotion
+f_no_emotion <- formula(paste("Recommended.IND ~ Nr_of_words + ", allFactors_clothing, " + ", allWords_clothing , " + ", allBigrams_clothing,"+", Age))
+lm.nodict_clothing <- lm(f_no_emotion, data=train_clothing)
+summary(lm.nodict_clothing)
+#adj_R2 = 0.1994
+#--Confusion matrix 
+pred.no_emo_training <- as.factor(predict(lm.nodict_clothing, train_clothing,type="response") < .5)
+pred.no_emo_testing  <- as.factor(predict(lm.nodict_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.no_emo_training,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.no_emo_testing,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+#--Variable importance
+varImp_no_emo <- caret::varImp(lm.nodict_clothing)
+varImp_no_emo$Variable <- rownames(varImp_no_emo)
+varImp_no_emo <- varImp_no_emo[order(-varImp_no_emo$Overall),]
+varImp_no_emo$Variable <- factor(varImp_no_emo$Variable, levels = rev(varImp_no_emo$Variable))
+#Top 12 t-value
+ggplot2::ggplot(varImp_no_emo[1:12,], aes(x=reorder(rownames(varImp_no_emo[1:12,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_no_emo[1:12,]), xend=rownames(varImp_no_emo[1:12,]), y=0, yend=Overall), 
+                color='skyblue') +
+  ggtitle("Variable Importance Top 12 (t-value)")+
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 12 scale
+vi_lm_no_emo <- coef(lm.nodict_clothing)/sqrt(colVars(model.matrix(formula(lm.nodict_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_no_emo <- data.frame(StdCoef_lm_no_emo=vi_lm_no_emo[2:length(vi_lm_no_emo)])
+StdCoef_lm_no_emo$Variable <- rownames(StdCoef_lm_no_emo)
+StdCoef_lm_no_emo <- StdCoef_lm_no_emo[order(- StdCoef_lm_no_emo$StdCoef_lm_no_emo),]
+StdCoef_lm_no_emo$Variable <- factor( StdCoef_lm_no_emo$Variable, levels = rev( StdCoef_lm_no_emo$Variable))
+
+StdCoef_lm_no_emo <-  StdCoef_lm_no_emo[1:12,]
+ggplot( StdCoef_lm_no_emo, aes(Variable,StdCoef_lm_no_emo)) + ggtitle("Variable Importancde Figure") + geom_bar(stat = "identity") + coord_flip() + ylab("Variable importance (standardized coefficients)")
+
+#---------Linear model with only dictionary
+f_onlydict <- formula(paste("Recommended.IND ~  Nr_of_words + ", allEmotions_clothing,"+",Age))
+lm.onlyemotions_clothing <- lm(f_onlydict, data=train_clothing)
+summary(lm.onlyemotions_clothing)
+#adj R2 = 0.05862
+#--Confusion matrix 
+pred.only_emo_train <- as.factor(predict(lm.onlyemotions_clothing, train_clothing,type="response") < .5)
+pred.only_emo_test  <- as.factor(predict(lm.onlyemotions_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.only_emo_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.only_emo_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+#--Variable importance
+varImp_only_emo <- caret::varImp(lm.onlyemotions_clothing)
+varImp_only_emo$Variable <- rownames(varImp_only_emo)
+varImp_only_emo <- varImp_only_emo[order(-varImp_only_emo$Overall),]
+varImp_only_emo$Variable <- factor(varImp_only_emo$Variable, levels = rev(varImp_only_emo$Variable))
+#Top 12 t-value
+ggplot2::ggplot(varImp_only_emo[1:12,], aes(x=reorder(rownames(varImp_only_emo[1:12,]),Overall), y=Overall)) +
+  ggtitle("Variable Importance Top 12 (t-value)")+
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_only_emo[1:12,]), xend=rownames(varImp_only_emo[1:12,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 25 scale
+vi_lm_only_emo <- coef(lm.onlyemotions_clothing)/sqrt(colVars(model.matrix(formula(lm.onlyemotions_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_only_emo <- data.frame(StdCoef_lm_only_emo=vi_lm_only_emo[2:length(vi_lm_only_emo)])
+StdCoef_lm_only_emo$Variable <- rownames(StdCoef_lm_only_emo)
+StdCoef_lm_only_emo <- StdCoef_lm_only_emo[order(- StdCoef_lm_only_emo$StdCoef_lm_only_emo),]
+StdCoef_lm_only_emo$Variable <- factor( StdCoef_lm_only_emo$Variable, levels = rev( StdCoef_lm_only_emo$Variable))
+StdCoef_lm_only_emo <-  StdCoef_lm_only_emo[1:25,]
+ggplot( StdCoef_lm_only_emo, aes(Variable,StdCoef_lm_only_emo)) + geom_bar(stat = "identity") + coord_flip() + ylab("Variable importance (standardized coefficients)")
+
+#------Linear model with only unigram
+f_onlyword <- paste("Recommended.IND ~ Nr_of_words + ", allWords_clothing, "+", Age)
+lm.onlywords_clothing <- lm(f_onlyword, data=train_clothing)
+summary(lm.onlywords_clothing)
+#adj R2 = 0.1452
+#--Confusion matrix 
+pred.uni_train <- as.factor(predict(lm.onlywords_clothing, train_clothing,type="response") < .5)
+pred.uni_test  <- as.factor(predict(lm.onlywords_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.uni_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.uni_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+#--Variable Importance
+varImp_uni <- caret::varImp(lm.onlywords_clothing)
+varImp_uni$Variable <- rownames(varImp_uni)
+varImp_uni <- varImp_uni[order(-varImp_uni$Overall),]
+varImp_uni$Variable <- factor(varImp_uni$Variable, levels = rev(varImp_uni$Variable))
+
+#Top 25 t-value
+ggplot2::ggplot(varImp_uni[1:25,], aes(x=reorder(rownames(varImp_uni[1:25,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 25 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_uni[1:25,]), xend=rownames(varImp_uni[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 25 scale
+vi_lm_uni <- coef(lm.onlywords_clothing)/sqrt(colVars(model.matrix(formula(lm.onlywords_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_uni <- data.frame(StdCoef_lm_uni=vi_lm_uni[2:length(vi_lm_uni)])
+StdCoef_lm_uni$Variable <- rownames(StdCoef_lm_uni)
+StdCoef_lm_uni <- StdCoef_lm_uni[order(- StdCoef_lm_uni$StdCoef_lm_uni),]
+StdCoef_lm_uni$Variable <- factor( StdCoef_lm_uni$Variable, levels = rev( StdCoef_lm_uni$Variable))
+
+StdCoef_lm_uni <-  StdCoef_lm_uni[1:25,]
+ggplot( StdCoef_lm_uni, aes(Variable,StdCoef_lm_uni)) + ggtitle("Variable Importance (Standardized Coefficient)")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable Importance") + xlab("Variable")
+
+#-----Linear model with only bigram
+f_bigram <- paste("Recommended.IND ~ Nr_of_words + ", allBigrams_clothing, "+", Age)
+lm.bigrams_clothing <- lm(f_bigram, data = train_clothing)
+summary(lm.bigrams_clothing)
+# adj R2 = 0.00163
+#compare accuracy
+pred.bi_train <- as.factor(predict(lm.bigrams_clothing, train_clothing,type="response") < .5)
+pred.bi_test  <- as.factor(predict(lm.bigrams_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.bi_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.bi_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+#Variable importance
+varImp_bi <- caret::varImp(lm.bigrams_clothing)
+varImp_bi$Variable <- rownames(varImp_bi)
+varImp_bi <- varImp_bi[order(-varImp_bi$Overall),]
+varImp_bi$Variable <- factor(varImp_bi$Variable, levels = rev(varImp_bi$Variable))
+
+#Top 25 t-value
+ggplot2::ggplot(varImp_bi[1:25,], aes(x=reorder(rownames(varImp_bi[1:25,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 25 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_bi[1:25,]), xend=rownames(varImp_bi[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 25 scale
+vi_lm_bi <- coef(lm.bigrams_clothing)/sqrt(colVars(model.matrix(formula(lm.bigrams_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_bi <- data.frame(StdCoef_lm_bi=vi_lm_bi[2:length(vi_lm_bi)])
+StdCoef_lm_bi$Variable <- rownames(StdCoef_lm_bi)
+StdCoef_lm_bi <- StdCoef_lm_bi[order(- StdCoef_lm_bi$StdCoef_lm_bi),]
+StdCoef_lm_bi$Variable <- factor( StdCoef_lm_bi$Variable, levels = rev( StdCoef_lm_bi$Variable))
+
+StdCoef_lm_bi <-  StdCoef_lm_bi[1:25,]
+ggplot( StdCoef_lm_bi, aes(Variable,StdCoef_lm_bi)) + ggtitle("Variable Importance (Standardized Coefficient)")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable Importance") + xlab("Variable")
+
+#-----Linear model with uni and bigram
+f_uni_bi <- paste("Recommended.IND~ Nr_of_words + ", allWords_clothing , " + ",allBigrams_clothing, "+", Age)
+lm.words_bigrams_clothing <- lm(f_uni_bi, data = train_clothing)
+summary(lm.words_bigrams_clothing)
+#adj_R2 = 0.1465
+#Compare the accuracy
+pred.unibi_train <- as.factor(predict(lm.words_bigrams_clothing, train_clothing,type="response") < .5)
+pred.unibi_test  <- as.factor(predict(lm.words_bigrams_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.unibi_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.unibi_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+#--Variable importance
+varImp_unibi <- caret::varImp(lm.words_bigrams_clothing)
+varImp_unibi$Variable <- rownames(varImp_unibi)
+varImp_unibi <- varImp_unibi[order(-varImp_unibi$Overall),]
+varImp_unibi$Variable <- factor(varImp_unibi$Variable, levels = rev(varImp_unibi$Variable))
+
+#Top 25 t-value
+ggplot2::ggplot(varImp_unibi[1:25,], aes(x=reorder(rownames(varImp_unibi[1:25,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 25 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_unibi[1:25,]), xend=rownames(varImp_unibi[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 25 scale
+vi_lm_unibi <- coef(lm.words_bigrams_clothing)/sqrt(colVars(model.matrix(formula(lm.words_bigrams_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_unibi <- data.frame(StdCoef_lm_unibi=vi_lm_unibi[2:length(vi_lm_unibi)])
+StdCoef_lm_unibi$Variable <- rownames(StdCoef_lm_unibi)
+StdCoef_lm_unibi <- StdCoef_lm_unibi[order(- StdCoef_lm_unibi$StdCoef_lm_unibi),]
+StdCoef_lm_unibi$Variable <- factor( StdCoef_lm_unibi$Variable, levels = rev( StdCoef_lm_unibi$Variable))
+
+StdCoef_lm_unibi <-  StdCoef_lm_unibi[1:25,]
+ggplot( StdCoef_lm_unibi, aes(Variable,StdCoef_lm_unibi)) + ggtitle("Variable Importance (Standardized Coefficient)")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable Importance") + xlab("Variable")
+
+#--Linear model with positive and negative sentiment
+f_posneg <- paste("Recommended.IND ~ Nr_of_words + positive + negative + Age")
+lm.posneg_clothing <- lm(f_posneg, data = train_clothing)
+summary(lm.posneg_clothing)
+#adj_R2 = 0.02142
+#Comparison matrix
+pred.posneg_train <- as.factor(predict(lm.posneg_clothing, train_clothing,type="response") < .5)
+pred.posneg_test  <- as.factor(predict(lm.posneg_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.posneg_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.posneg_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+#--Variable importance
+varImp_posneg <- caret::varImp(lm.posneg_clothing)
+varImp_posneg$Variable <- rownames(varImp_posneg)
+varImp_posneg <- varImp_posneg[order(-varImp_posneg$Overall),]
+varImp_posneg$Variable <- factor(varImp_posneg$Variable, levels = rev(varImp_posneg$Variable))
+
+#Top 4 t-value
+ggplot2::ggplot(varImp_posneg[1:4,], aes(x=reorder(rownames(varImp_posneg[1:4,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 4 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_posneg[1:4,]), xend=rownames(varImp_posneg[1:4,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Top 4 scale
+vi_lm_posneg <- coef(lm.posneg_clothing)/sqrt(colVars(model.matrix(formula(lm.posneg_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_posneg <- data.frame(StdCoef_lm_posneg=vi_lm_posneg[2:length(vi_lm_posneg)])
+StdCoef_lm_posneg$Variable <- rownames(StdCoef_lm_posneg)
+StdCoef_lm_posneg <- StdCoef_lm_posneg[order(- StdCoef_lm_posneg$StdCoef_lm_posneg),]
+StdCoef_lm_posneg$Variable <- factor( StdCoef_lm_posneg$Variable, levels = rev( StdCoef_lm_posneg$Variable))
+
+StdCoef_lm_posneg <-  StdCoef_lm_posneg[1:4,]
+ggplot(StdCoef_lm_posneg, aes(Variable,StdCoef_lm_posneg)) +ggtitle("Variable Importance top 4")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable importance")
+
+
+#interaction between age & number of word with all
+f_interaction_all <- formula(paste("Recommended.IND ~ Nr_of_words + ", allFactors_clothing, " + ", allEmotions_clothing, " + ", allWords_clothing , " + ", allBigrams_clothing, "+", Age,"+", Age,"*","Nr_of_words"))
+lm.interaction_all <- lm(f_interaction_all ,data = train_clothing)
+summary(lm.interaction_all)
+#adj R2 - 0.2161 and only negative significant
+#Comparison matrix
+pred.interaction_train <- as.factor(predict(lm.interaction_all, train_clothing,type="response") < .5)
+pred.interaction_test  <- as.factor(predict(lm.interaction_all,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.interaction_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.interaction_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+#--Variable importance
+varImp_interaction <- caret::varImp(lm.interaction_all)
+varImp_interaction$Variable <- rownames(varImp_interaction)
+varImp_interaction <- varImp_interaction[order(-varImp_interaction$Overall),]
+varImp_interaction$Variable <- factor(varImp_interaction$Variable, levels = rev(varImp_interaction$Variable))
+
+#Top 25 t-value
+ggplot2::ggplot(varImp_interaction[1:25,], aes(x=reorder(rownames(varImp_interaction[1:25,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 25 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_interaction[1:25,]), xend=rownames(varImp_interaction[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip()
+
+vi_lm_interaction <- coef(lm.interaction_all)/sqrt(colVars(model.matrix(formula(lm.interaction_all), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_interaction <- data.frame(StdCoef_lm_interaction=vi_lm_interaction[2:length(vi_lm_interaction)])
+StdCoef_lm_interaction$Variable <- rownames(StdCoef_lm_interaction)
+StdCoef_lm_interaction <- StdCoef_lm_interaction[order(- StdCoef_lm_interaction$StdCoef_lm_interaction),]
+StdCoef_lm_interaction$Variable <- factor( StdCoef_lm_interaction$Variable, levels = rev(StdCoef_lm_interaction$Variable))
+
+StdCoef_lm_interaction <-  StdCoef_lm_interaction[1:25,]
+ggplot(StdCoef_lm_interaction, aes(Variable,StdCoef_lm_interaction)) + ggtitle("Variable Importance standardized coefficients")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable importance")
+
+#----Linear model with only factor
+f_onlyfactors <- paste("Recommended.IND ~  Nr_of_words + ", allFactors_clothing, "+", Age)
+lm.onlyfactors_clothing <- lm(f_onlyfactors, data = train_clothing)
+summary(lm.onlyfactors_clothing)
+#adj R2 = 0.08154
+#Comparison matrix
+pred.factor_train <- as.factor(predict(lm.onlyfactors_clothing, train_clothing,type="response") < .5)
+pred.factor_test  <- as.factor(predict(lm.onlyfactors_clothing,test_clothing, type="response") < .5)
+
+confusionMatrix(data = pred.factor_train,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = pred.factor_test,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+#--Variable importance
+varImp_factor <- caret::varImp(lm.onlyfactors_clothing)
+varImp_factor$Variable <- rownames(varImp_factor)
+varImp_factor <- varImp_factor[order(-varImp_factor$Overall),]
+varImp_factor$Variable <- factor(varImp_factor$Variable, levels = rev(varImp_factor$Variable))
+
+#Top 17 t-value
+ggplot2::ggplot(varImp_factor[1:17,], aes(x=reorder(rownames(varImp_factor[1:17,]),Overall), y=Overall)) +
+  geom_point( color="blue", size=4, alpha=0.6)+
+  ggtitle("Variable Importance Top 17 (t-value)")+
+  geom_segment( aes(x=rownames(varImp_factor[1:17,]), xend=rownames(varImp_factor[1:17,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip()
+
+vi_lm_factor <- coef(lm.onlyfactors_clothing)/sqrt(colVars(model.matrix(formula(lm.onlyfactors_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm_factor <- data.frame(StdCoef_lm_factor=vi_lm_factor[2:length(vi_lm_factor)])
+StdCoef_lm_factor$Variable <- rownames(StdCoef_lm_factor)
+StdCoef_lm_factor <- StdCoef_lm_factor[order(- StdCoef_lm_factor$StdCoef_lm_factor),]
+StdCoef_lm_factor$Variable <- factor( StdCoef_lm_factor$Variable, levels = rev(StdCoef_lm_factor$Variable))
+
+StdCoef_lm_factor <-  StdCoef_lm_factor[1:17,]
+ggplot(StdCoef_lm_factor, aes(Variable,StdCoef_lm_factor)) + geom_bar(stat = "identity") + ggtitle("Variable Importance standardized coefficients")+ coord_flip() + ylab("Variable importance")
+
+#AIC comparison
+AIC(lm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing, lm.onlyemotions_clothing, lm.onlywords_clothing, lm.bigrams_clothing, lm.words_bigrams_clothing, lm.posneg_clothing, lm.interaction_all)
+#Best model is the lowest model with all variable
+#Test some nested models
+anova(lm.nodict_clothing, lm.all_clothing)
+anova(lm.onlyfactors_clothing, lm.all_clothing)
+anova(lm.interaction_clothing, lm.all_clothing)
+anova(lm.onlyemotions_clothing,lm.all_clothing)
+anova(lm.posneg_clothing, lm.onlyemotions_clothing)
+anova(lm.words_bigrams_clothing, lm.all_clothing)
+
+#Plot prediction histograms for training data
+library(ggplot2)
+dat_clothing <- data.frame(Prediction_clothing=predict(lm.all_clothing), Recommended.IND=train_clothing$Recommended.IND)
+ggplot(dat_clothing, aes(x=Prediction_clothing))  + 
+  ggtitle("Prediction Histogram")+
+  geom_histogram(data=subset(dat_clothing,Recommended.IND == 0),fill = "red", alpha = 0.2) +
+  geom_histogram(data=subset(dat_clothing,Recommended.IND == 1),fill = "blue", alpha = 0.2)
+  
+
+#Compare to logit model (GLM)
+f_glm <- paste("Recommended.IND ~ Nr_of_words + ", allFactors_clothing, " + ", allEmotions_clothing, " + ", allWords_clothing , " + ", allBigrams_clothing, "+", Age, "+",Age,"*","Nr_of_words")
+glm.all_clothing <- glm(f_glm, data=train_clothing , family=binomial)
+summary(glm.all_clothing)
+#AIC = 8109.7
+AIC(lm.all_clothing,glm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing, lm.onlyemotions_clothing, lm.onlywords_clothing, lm.bigrams_clothing, lm.words_bigrams_clothing, lm.posneg_clothing, lm.interaction_all)
+
+#Coefficient
+exp(coef(glm.all_clothing))
+
+
+anova(glm.all_clothing, test ="Chisq")
+library(pscl)
+#pseudo R2
+pR2(glm.all_clothing)
+#Pseudo R2 = 0.2143
+
+
+#Plot GLM fit for training data
+dat_glm <- data.frame(Predicted_prob_clothing=predict(glm.all_clothing, type="response"), Recommended.IND = train_clothing$Recommended.IND)
+ggplot(dat_glm, aes(x=Predicted_prob_clothing))  + 
+  ggtitle("GLM plot")+
+  geom_histogram(data=subset(dat_glm,Recommended.IND == 0),fill = "red", alpha = 0.2) +
+  geom_histogram(data=subset(dat_glm,Recommended.IND == 1),fill = "blue", alpha = 0.2)
+
+#Compare fit: hitrate - GLM and LM - training data
+library(caret)
+predglm_clothing <- as.factor(predict(glm.all_clothing,train_clothing, type="response") < .5)
+predlm_clothing  <- as.factor(predict(lm.all_clothing, train_clothing, type="response") < .5)
+
+confusionMatrix(data = predlm_clothing,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = predglm_clothing,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+#Compare fit: hitrate - GLM and LM - testing data
+p_lm <- as.factor(predict(lm.all_clothing, test_clothing, type = "response")<.5)
+p_glm <- as.factor(predict(glm.all_clothing, test_clothing, type = "response")<.5)
+confusionMatrix(data = p_lm,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = p_glm,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+#Variable importance of linear model using t-value
+varImp_lm <- caret::varImp(lm.all_clothing)
+varImp_lm$Variable <- rownames(varImp_lm)
+varImp_lm <- varImp_lm[order(-varImp_lm$Overall),]
+varImp_lm$Variable <- factor(varImp_lm$Variable, levels = rev(varImp_lm$Variable))
+#Top 25 
+ggplot2::ggplot(varImp_lm[1:25,], aes(x=reorder(rownames(varImp_lm[1:25,]),Overall), y=Overall)) +
+  ggtitle("Variable Importance Top 25")+
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_lm[1:25,]), xend=rownames(varImp_lm[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#bottom 25
+ggplot2::ggplot(varImp_lm[249:274,], aes(x=reorder(rownames(varImp_lm[249:274,]),Overall), y=Overall)) +
+  ggtitle("Variable Importance bottom 25")+
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_lm[249:274,]), xend=rownames(varImp_lm[249:274,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#Variable importance of glm using t-value
+varImp_glm <- caret::varImp(glm.all_clothing)
+varImp_glm$Variable <- rownames(varImp_glm)
+varImp_glm <- varImp_glm[order(-varImp_glm$Overall),]
+varImp_glm$Variable <- factor(varImp_glm$Variable, levels = rev(varImp_glm$Variable))
+#Top 25 
+ggplot2::ggplot(varImp_glm[1:25,], aes(x=reorder(rownames(varImp_glm[1:25,]),Overall), y=Overall)) +
+  ggtitle("Variable Importance Top 25")+
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_glm[1:25,]), xend=rownames(varImp_glm[1:25,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip() 
+
+#bottom 25
+ggplot2::ggplot(varImp_glm[249:274,], aes(x=reorder(rownames(varImp_glm[249:274,]),Overall), y=Overall)) +
+  ggtitle("Variable Importance Bottom 25")+
+  geom_point( color="blue", size=4, alpha=0.6)+
+  geom_segment( aes(x=rownames(varImp_glm[249:274,]), xend=rownames(varImp_glm[249:274,]), y=0, yend=Overall), 
+                color='skyblue') +
+  xlab('Variable')+
+  ylab('Overall Importance')+
+  theme_light() +
+  coord_flip()
+
+#Variable importance using standardized coefficients
+library("matrixStats")
+#linear model
+vi_lm <- coef(lm.all_clothing)/sqrt(colVars(model.matrix(formula(lm.all_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_lm <- data.frame(StdCoef_lm=vi_lm[2:length(vi_lm)])
+StdCoef_lm$Variable <- rownames(StdCoef_lm)
+StdCoef_lm <- StdCoef_lm[order(- StdCoef_lm$StdCoef_lm),]
+StdCoef_lm$Variable <- factor( StdCoef_lm$Variable, levels = rev( StdCoef_lm$Variable))
+
+StdCoef_lm <-  StdCoef_lm[1:25,]
+ggplot( StdCoef_lm, aes(Variable,StdCoef_lm)) + ggtitle("Variable Importance Stanardized coefficients")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable Importance")
+
+#logit model
+vi_glm <- coef(glm.all_clothing)/sqrt(colVars(model.matrix(formula(glm.all_clothing), data=clothing_df_small[clothing_unique ==1,])))
+StdCoef_glm <- data.frame(StdCoef_glm=vi_glm[2:length(vi_glm)])
+StdCoef_glm$Variable <- rownames(StdCoef_glm)
+StdCoef_glm <- StdCoef_glm[order(- StdCoef_glm$StdCoef_glm),]
+StdCoef_glm$Variable <- factor( StdCoef_glm$Variable, levels = rev( StdCoef_glm$Variable))
+
+StdCoef_glm <-  StdCoef_glm[1:25,]
+ggplot( StdCoef_glm, aes(Variable,StdCoef_glm)) +ggtitle("Variable Importance Top 25")+ geom_bar(stat = "identity") + coord_flip() + ylab("Variable Importance")
+
+#Lasso Regression
+f_lasso = paste("~ 0 + Nr_of_words + ", allFactors_clothing, "+", 
+                allEmotions_clothing, " + ", allWords_clothing, " + ", 
+                allBigrams_clothing,"+", Age, "+", Age, "*","Nr_of_words")
+
+# Collect explanatory variables in a (large) matrix
+library(glmnet)
+library(plotmo) # for plot_glmnet
+LargeX_clothing <- model.matrix(formula(f_lasso), data=clothing_df_small)
+y_clothing <- as.matrix(clothing_df_small[clothing_unique ==1,"Recommended.IND"])
+lasso.mod_clothing <- glmnet(LargeX_clothing[clothing_unique ==1,], y_clothing, alpha = 1)
+
+plot_glmnet(lasso.mod_clothing) 
+plot(lasso.mod_clothing)
+
+cvfit_clothing <- cv.glmnet(LargeX_clothing[clothing_unique ==1,], y_clothing, alpha = 1)
+
+plot(cvfit_clothing)
+
+coef(lasso.mod_clothing, cvfit_clothing$lambda.1se)
+
+par_1 <- predict(lasso.mod_clothing, s = cvfit_clothing$lambda.min, type='coefficients')
+nnzero(par_1)
+par_2 <- predict(lasso.mod_clothing, s = cvfit_clothing$lambda.1se, type='coefficients')
+nnzero(par_2)
+
+lasso.pred_clothing <- predict(lasso.mod_clothing, s = cvfit_clothing$lambda.1se, newx = LargeX_clothing[clothing_unique ==1,])
+
+lasso.pred.test_clothing <- predict(lasso.mod_clothing, s = cvfit_clothing$lambda.1se, newx = LargeX_clothing[clothing_unique ==2,])
+mean((clothing_df_small[clothing_unique ==2, "Recommended.IND"]-lasso.pred.test_clothing)^2)
+
+#Confusion matrix for the training set
+p_lasso_training <- as.factor(lasso.pred_clothing <.5)
+p_lasso_testing <- as.factor(lasso.pred.test_clothing<.5)
+confusionMatrix(data = p_lasso_training,  
+                reference = as.factor(train_clothing$Recommended.IND == 0))
+
+confusionMatrix(data = p_lasso_testing,  
+                reference = as.factor(test_clothing$Recommended.IND == 0))
+
+
+#Forecast comparison
+for (m_clothing in list(lm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing, 
+                        lm.onlyemotions_clothing, lm.onlywords_clothing, 
+                        lm.bigrams_clothing, lm.words_bigrams_clothing, 
+                        lm.interaction_all)){
+  predicted_clothing <- 1+(predict.lm(m_clothing, train_clothing) < 0.5)
+  predicted_test_clothing <- 1+ (predict.lm(m_clothing, test_clothing) < 0.5)
+  hit_clothing <- mean(predicted_clothing == train_clothing$Recommended.IND)
+  hit.test_clothing <- mean(predicted_test_clothing == test_clothing$Recommended.IND)
+  print(c(hit_clothing,hit.test_clothing))
+}
+
+print("lm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing,lm.onlyemotions_clothing, lm.onlywords_clothing, lm.bigrams_clothing, lm.words_bigrams_clothing, lm.interaction_all")
+
+print("GLM_clothing")
+pred.glm_clothing1 <- predict(glm.all_clothing, type="response") < 0.5
+pred.glm.test_clothing1 <- predict(glm.all_clothing, type="response", newdata=test_clothing) < 0.5
+print("estimation_insample_clothing")
+mean(pred.glm_clothing1 == (train_clothing$Recommended.IND == 0))
+print("test_clothing")
+mean(pred.glm.test_clothing1 == (test_clothing$Recommended.IND==0))
+
+print("Lasso LM_clothing")
+pred_clothing_lasso <- 1+(lasso.pred_clothing < 0.5)
+hit_clothing <- mean(pred_clothing_lasso == train_clothing$Recommended.IND)
+pred_test_lasso <- 1+(lasso.pred.test_clothing < 0.5)
+hit.test_clothing <- mean(pred_test_lasso == test_clothing$Recommended.IND)
+print(c(hit_clothing,hit.test_clothing))
+
+#Variable importance for lasso
+coefList <- coef(cvfit_clothing, s='lambda.1se')
+coefList <- data.frame(coefList@Dimnames[[1]][coefList@i+1],coefList@x)
+names(coefList) <- c('var','val')
+
+coefList %>%
+  arrange(-abs(val)) %>%
+  print()
+
+
+#Forecast comparison
+for (m_clothing in list(lm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing, 
+                        lm.onlyemotions_clothing, lm.onlywords_clothing, 
+                        lm.bigrams_clothing, lm.words_bigrams_clothing, 
+                        lm.interaction_all)){
+  predicted_clothing <- 1+(predict.lm(m_clothing, train_clothing) < 0.5)
+  predicted_test_clothing <- 1+ (predict.lm(m_clothing, test_clothing) < 0.5)
+  hit_clothing <- mean(predicted_clothing == train_clothing$Recommended.IND)
+  hit.test_clothing <- mean(predicted_test_clothing == test_clothing$Recommended.IND)
+  print(c(hit_clothing,hit.test_clothing))
+}
+
+print("lm.all_clothing, lm.nodict_clothing, lm.onlyfactors_clothing,lm.onlyemotions_clothing, lm.onlywords_clothing, lm.bigrams_clothing, lm.words_bigrams_clothing, lm.interaction_all")
+
+print("GLM_clothing")
+pred.glm_clothing1 <- predict(glm.all_clothing, type="response") < 0.5
+pred.glm.test_clothing1 <- predict(glm.all_clothing, type="response", newdata=test_clothing) < 0.5
+print("estimation_insample_clothing")
+mean(pred.glm_clothing1 == (train_clothing$Recommended.IND == 0))
+print("test_clothing")
+mean(pred.glm.test_clothing1 == (test_clothing$Recommended.IND==0))
+
+print("Lasso LM_clothing")
+pred_clothing_lasso <- 1+(lasso.pred_clothing < 0.5)
+hit_clothing <- mean(pred_clothing_lasso == train_clothing$Recommended.IND)
+pred_test_lasso <- 1+(lasso.pred.test_clothing < 0.5)
+hit.test_clothing <- mean(pred_test_lasso == test_clothing$Recommended.IND)
+print(c(hit_clothing,hit.test_clothing))
+
+#Variable importance for lasso
+coefList <- coef(cvfit_clothing, s='lambda.1se')
+coefList <- data.frame(coefList@Dimnames[[1]][coefList@i+1],coefList@x)
+names(coefList) <- c('var','val')
+
+coefList %>%
+  arrange(-abs(val)) %>%
+  print()
+
+```
